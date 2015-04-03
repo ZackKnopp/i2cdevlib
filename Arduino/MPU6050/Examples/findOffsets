@@ -1,0 +1,311 @@
+// Calibrate IMU sketch for determining Offsets for MPU6050 based on Jeff Rowberg's code.
+// Written by Zack Knopp April 2015
+
+// I2C device class (I2Cdev) demonstration Arduino sketch for MPU6050 class
+// 10/7/2011 by Jeff Rowberg <jeff@rowberg.net>
+// Updates should (hopefully) always be available at https://github.com/jrowberg/i2cdevlib
+//
+// Changelog:
+//      2013-05-08 - added multiple output formats
+//                 - added seamless Fastwire support
+//      2011-10-07 - initial release
+
+/* ============================================
+I2Cdev device library code is placed under the MIT license
+Copyright (c) 2011 Jeff Rowberg
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+===============================================
+*/
+
+// I2Cdev and MPU6050 must be installed as libraries, or else the .cpp/.h files
+// for both classes must be in the include path of your project
+#include "I2Cdev.h"
+#include "MPU6050.h"
+
+// Arduino Wire library is required if I2Cdev I2CDEV_ARDUINO_WIRE implementation
+// is used in I2Cdev.h
+#if I2CDEV_IMPLEMENTATION == I2CDEV_ARDUINO_WIRE
+    #include "Wire.h"
+#endif
+
+// class default I2C address is 0x68
+// specific I2C addresses may be passed as a parameter here
+// AD0 low = 0x68 (default for InvenSense evaluation board)
+// AD0 high = 0x69
+MPU6050 accelgyro;
+//MPU6050 accelgyro(0x69); // <-- use for AD0 high
+
+int16_t ax, ay, az;
+int16_t gx, gy, gz;
+
+
+
+// uncomment "OUTPUT_READABLE_ACCELGYRO" if you want to see a tab-separated
+// list of the accel X/Y/Z and then gyro X/Y/Z values in decimal. Easy to read,
+// not so easy to parse, and slow(er) over UART.
+//#define OUTPUT_READABLE_ACCELGYRO
+
+// uncomment "OUTPUT_BINARY_ACCELGYRO" to send all 6 axes of data as 16-bit
+// binary, one right after the other. This is very fast (as fast as possible
+// without compression or data loss), and easy to parse, but impossible to read
+// for a human.
+//#define OUTPUT_BINARY_ACCELGYRO
+
+
+#define LED_PIN 13
+bool blinkState = false;
+
+void setup() {
+    // join I2C bus (I2Cdev library doesn't do this automatically)
+    #if I2CDEV_IMPLEMENTATION == I2CDEV_ARDUINO_WIRE
+        Wire.begin();
+    #elif I2CDEV_IMPLEMENTATION == I2CDEV_BUILTIN_FASTWIRE
+        Fastwire::setup(400, true);
+    #endif
+
+    // initialize serial communication
+    // (38400 chosen because it works as well at 8MHz as it does at 16MHz, but
+    // it's really up to you depending on your project)
+    Serial.begin(115200);
+
+    // initialize device
+    Serial.println("Initializing I2C devices...");
+    accelgyro.initialize();
+
+    // verify connection
+    Serial.println("Testing device connections...");
+    Serial.println(accelgyro.testConnection() ? "MPU6050 connection successful" : "MPU6050 connection failed");
+
+    // use the code below to change accel/gyro offset values
+    
+    Serial.println("Updating internal sensor offsets...");
+    // -76	-2359	1688	0	0	0
+    Serial.print(accelgyro.getXAccelOffset()); Serial.print("\t"); // -76
+    Serial.print(accelgyro.getYAccelOffset()); Serial.print("\t"); // -2359
+    Serial.print(accelgyro.getZAccelOffset()); Serial.print("\t"); // 1688
+    Serial.print(accelgyro.getXGyroOffset()); Serial.print("\t"); // 0
+    Serial.print(accelgyro.getYGyroOffset()); Serial.print("\t"); // 0
+    Serial.print(accelgyro.getZGyroOffset()); Serial.print("\t"); // 0
+    Serial.print("\n");
+    accelgyro.setXAccelOffset(-1825);
+    accelgyro.setYAccelOffset(1669);
+    accelgyro.setZAccelOffset(0);
+    accelgyro.setXGyroOffset(9);
+    accelgyro.setYGyroOffset(46);
+    accelgyro.setZGyroOffset(163);
+    Serial.print(accelgyro.getXAccelOffset()); Serial.print("\t"); // -76
+    Serial.print(accelgyro.getYAccelOffset()); Serial.print("\t"); // -2359
+    Serial.print(accelgyro.getZAccelOffset()); Serial.print("\t"); // 1688
+    Serial.print(accelgyro.getXGyroOffset()); Serial.print("\t"); // 0
+    Serial.print(accelgyro.getYGyroOffset()); Serial.print("\t"); // 0
+    Serial.print(accelgyro.getZGyroOffset()); Serial.print("\t"); // 0
+    Serial.print("\n");
+    
+
+    // configure Arduino LED for
+    pinMode(LED_PIN, OUTPUT);
+}
+int i = 0;
+int ax_interval = 20;
+int ay_interval = 20;
+int az_interval = 100;
+int gx_interval = 20;
+int gy_interval = 20;
+int gz_interval = 20;
+int ax_sign_last = 0;
+int ay_sign_last = 0;
+int az_sign_last = 0;
+int gx_sign_last = 0;
+int gy_sign_last = 0;
+int gz_sign_last = 0;
+long long int ax_sum;
+long long int ay_sum;
+long long int az_sum;
+long long int gx_sum;
+long long int gy_sum;
+long long int gz_sum;
+int print_flag = 1;
+
+int sgn(int x)
+{
+  if(x>0)
+    return 1;
+  if(x<0)
+    return -1;
+  if(x==0)
+    return 0;
+}
+
+void loop() {
+  // read raw accel/gyro measurements from device
+  accelgyro.getMotion6(&ax, &ay, &az, &gx, &gy, &gz);
+  
+  // sum the data to determine averages
+  ax_sum = ax_sum + ax;
+  ay_sum = ay_sum + ay;
+  az_sum = az_sum + az;
+  gx_sum = gx_sum + gx;
+  gy_sum = gy_sum + gy;
+  gz_sum = gz_sum + gz;
+  
+  if(i == 100)
+  {
+    // Determining offset for ax
+    if(ax_interval!=0)
+    {
+      if(i==0|i==1){
+        ax_sign_last = sgn(ax_sum);}
+      // Change the offset by 100 until it crosses the zero then decrement the change
+      if(ax_sign_last!=sgn(ax_sum)){
+        ax_interval = ax_interval - 1;}
+      accelgyro.setXAccelOffset(accelgyro.getXAccelOffset()-sgn(ax_sum)*ax_interval);
+      ax_sign_last = sgn(ax_sum);
+      //Serial.print(ax_interval);
+      //Serial.print("  ");
+      //Serial.print((int)ax_sum/100);
+      //Serial.print("  ");
+      ax_sum = 0;
+    }
+    // Determining offset for ay
+    if(ay_interval!=0)
+    {
+      if(i==0|i==1)
+        ay_sign_last = sgn(ay_sum);
+      // Change the offset by 100 until it crosses the zero then decrement the change
+      if(ay_sign_last!=sgn(ay_sum))
+        ay_interval = ay_interval - 1;
+      accelgyro.setYAccelOffset(accelgyro.getYAccelOffset()-sgn(ay_sum)*ay_interval);
+      ay_sign_last = sgn(ay_sum);
+      //Serial.print(ay_interval);
+      //Serial.print("  ");
+      //Serial.print((int)ay_sum/100);
+      //Serial.println("  ");
+      ay_sum = 0;
+    }
+    // Determining offset for az
+    if(az_interval!=0)
+    {
+      if(i==0|i==1)
+        az_sign_last = sgn((az_sum/100)-16384);
+      // Change the offset by 100 until it crosses the point we want it to be at then decrement the change
+      if(az_sign_last!=sgn((az_sum/100)-16384));
+        az_interval = az_interval - 1;
+      accelgyro.setZAccelOffset(accelgyro.getZAccelOffset()-sgn((az_sum/100)-16384)*az_interval);
+      az_sign_last = sgn((az_sum/100)-16384);
+      //Serial.print(az_interval);
+      //Serial.print("  ");
+      //Serial.println((int)az_sum/100);
+      az_sum = 0;
+    }
+    // Determining offset for gx
+    if(gx_interval!=0)
+    {
+      if(i==0|i==1)
+        gx_sign_last = sgn(gx_sum);
+      // Change the offset by 100 until it crosses the zero then decrement the change
+      if(gx_sign_last!=sgn(gx_sum))
+        gx_interval = gx_interval - 1;
+      accelgyro.setXGyroOffset(accelgyro.getXGyroOffset()-sgn(gx_sum)*gx_interval);
+      gx_sign_last = sgn(gx_sum);
+      //Serial.print(gx_interval);
+      //Serial.print("  ");
+      //Serial.println((int)gx_sum/100);
+      gx_sum = 0;
+    }
+    // Determining offset for gy
+    if(gy_interval!=0)
+    {
+      if(i==0|i==1)
+        gy_sign_last = sgn(gy_sum);
+      // Change the offset by 100 until it crosses the zero then decrement the change
+      if(gy_sign_last!=sgn(gy_sum))
+        gy_interval = gy_interval - 1;
+      accelgyro.setYGyroOffset(accelgyro.getYGyroOffset()-sgn(gy_sum)*gy_interval);
+      gy_sign_last = sgn(gy_sum);
+      //Serial.print(gy_interval);
+      //Serial.print("  ");
+      //Serial.println((int)gy_sum/100);
+      gy_sum = 0;
+    }
+    // Determining offset for gz
+    if(gz_interval!=0)
+    {
+      if(i==0|i==1)
+        gz_sign_last = sgn(gz_sum);
+      // Change the offset by 100 until it crosses the zero then decrement the change
+      if(gz_sign_last!=sgn(gz_sum))
+        gz_interval = gz_interval - 1;
+      accelgyro.setZGyroOffset(accelgyro.getZGyroOffset()-sgn(gz_sum)*gz_interval);
+      gz_sign_last = sgn(gz_sum);
+      //Serial.print(gz_interval);
+      //Serial.print("  ");
+      //Serial.println((int)gz_sum/100);
+      gz_sum = 0;
+    }
+    i = 0;
+  }
+  i++;
+    
+  if(ax_interval==0&&ay_interval==0&&az_interval==0&&gx_interval==0&&gy_interval==0&&gz_interval==0)
+  {
+    if(print_flag == 1)
+    {
+      Serial.print("\n NEW OFFSET VALUES:\n");
+      Serial.print(accelgyro.getXAccelOffset()); Serial.print("\t"); 
+      Serial.print(accelgyro.getYAccelOffset()); Serial.print("\t"); 
+      Serial.print(accelgyro.getZAccelOffset()); Serial.print("\n"); 
+      Serial.print(accelgyro.getXGyroOffset()); Serial.print("\t"); 
+      Serial.print(accelgyro.getYGyroOffset()); Serial.print("\t"); 
+      Serial.print(accelgyro.getZGyroOffset()); Serial.print("\t"); 
+      Serial.print("\n");
+      print_flag = 0;
+    }
+  }
+  // these methods (and a few others) are also available
+  //accelgyro.getAcceleration(&ax, &ay, &az);
+  //accelgyro.getRotation(&gx, &gy, &gz);
+  
+  #ifdef OUTPUT_READABLE_ACCELGYRO
+      // display tab-separated accel/gyro x/y/z values
+      if(print_flag == 1)
+      {
+        Serial.print("a/g:\t");
+        Serial.print(ax); Serial.print("\t");
+        Serial.print(ay); Serial.print("\t");
+        Serial.print(az); Serial.print("\t");
+        Serial.print(gx); Serial.print("\t");
+        Serial.print(gy); Serial.print("\t");
+        Serial.println(gz);
+      }
+  #endif
+
+  #ifdef OUTPUT_BINARY_ACCELGYRO
+      Serial.write((uint8_t)(ax >> 8)); Serial.write((uint8_t)(ax & 0xFF));
+      Serial.write((uint8_t)(ay >> 8)); Serial.write((uint8_t)(ay & 0xFF));
+      Serial.write((uint8_t)(az >> 8)); Serial.write((uint8_t)(az & 0xFF));
+      Serial.write((uint8_t)(gx >> 8)); Serial.write((uint8_t)(gx & 0xFF));
+      Serial.write((uint8_t)(gy >> 8)); Serial.write((uint8_t)(gy & 0xFF));
+      Serial.write((uint8_t)(gz >> 8)); Serial.write((uint8_t)(gz & 0xFF));
+  #endif
+
+  // blink LED to indicate activity
+  blinkState = !blinkState;
+  digitalWrite(LED_PIN, blinkState);
+}
